@@ -1,0 +1,52 @@
+{
+  "name": "@botchainlabs/agentpay-payer",
+  "version": "0.1.0-rc.1",
+  "description": "Thin BOT Chain x402 payer adapter",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BOTChainLabs/agentpay-payer-ts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BOTChainLabs/agentpay-payer-ts/issues"
+  },
+  "homepage": "https://github.com/BOTChainLabs/agentpay-payer-ts#readme",
+  "keywords": [
+    "agentpay",
+    "botchain",
+    "x402",
+    "payments"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@x402/core": "2.27.0",
+    "@x402/evm": "2.27.0",
+    "@x402/fetch": "2.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.4",
+    "tsx": "4.21.0",
+    "typescript": "5.7.3",
+    "viem": "2.48.11"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
