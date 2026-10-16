@@ -1,6 +1,6 @@
 {
   "name": "@botchainlabs/agentpay-payer",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "description": "Thin BOT Chain x402 payer adapter",
   "license": "Apache-2.0",
   "repository": {

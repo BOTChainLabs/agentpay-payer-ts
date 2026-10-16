@@ -3,11 +3,14 @@ import type { HexAddress, PreflightClient, PreflightResult, RecoveryAction } fro
 
 const maxPreflightResponseBytes = 128 * 1024;
 
+// See ThinPayerAdapter.defaultFetch: native browser fetch needs Window as its receiver.
+const defaultFetch: typeof globalThis.fetch = (input, init) => globalThis.fetch(input, init);
+
 /** HTTP client for B5.4. It is optional in the adapter because the server route is delivered separately. */
 export class HTTPPreflightClient implements PreflightClient {
   constructor(
     private readonly endpoint: URL,
-    private readonly fetchImplementation: typeof fetch = globalThis.fetch,
+    private readonly fetchImplementation: typeof fetch = defaultFetch,
   ) {}
 
   static fromBaseURL(baseURL: string | URL, fetchImplementation?: typeof fetch): HTTPPreflightClient {

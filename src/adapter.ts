@@ -16,6 +16,11 @@ import type {
 
 const supportedCacheTTLMilliseconds = 60_000;
 
+// Browser fetch is a Window-bound Web API. Storing window.fetch directly and later invoking it
+// as a plain function loses its receiver, producing "Illegal invocation" before the 402 request
+// reaches the Provider. Keep this wrapper rather than a captured method reference.
+const defaultFetch: typeof globalThis.fetch = (input, init) => globalThis.fetch(input, init);
+
 export interface ThinPayerAdapterOptions {
   readonly profile: BotChainProfile;
   readonly signer: EvmPayerSigner;
@@ -52,7 +57,7 @@ export class ThinPayerAdapter {
     this.profile = options.profile;
     this.signer = options.signer;
     this.policy = options.policy ?? {};
-    this.fetchImplementation = options.fetch ?? globalThis.fetch;
+    this.fetchImplementation = options.fetch ?? defaultFetch;
     if (options.agentPayURL !== undefined && options.preflight !== undefined) {
       throw new AgentPayPayerError("INVALID_CONFIGURATION", "agentPayURL and preflight cannot be configured together");
     }
@@ -210,7 +215,24 @@ export class ThinPayerAdapter {
       }
       const header = response.headers.get("PAYMENT-RESPONSE");
       if (header === null) {
-        throw new AgentPayPayerError("PAYMENT_RESPONSE_MISSING", "paid provider response is missing PAYMENT-RESPONSE");
+        const cause = new AgentPayPayerError(
+          "PAYMENT_RESPONSE_MISSING",
+          `paid provider response is missing PAYMENT-RESPONSE (HTTP ${response.status})`,
+          { status: response.status, retryable: response.status >= 500 },
+        );
+        // Provider 5xx can occur after an order has been prepared or broadcast. It is not safe
+        // to create a second Permit2 signature, but retrying the original signed request is safe.
+        if (response.status >= 500) {
+          return { kind: "unknown", response, attempt: this.makeAttempt(original, payload, paymentHeaders), cause };
+        }
+        const reason = await providerRejectionCode(response.clone());
+        throw new AgentPayPayerError(
+          "PAYMENT_RETRY_REJECTED",
+          reason === undefined
+            ? `provider rejected the signed payment retry (HTTP ${response.status})`
+            : `provider rejected the signed payment retry: ${reason} (HTTP ${response.status})`,
+          { status: response.status, retryable: false, cause },
+        );
       }
       try {
         const result = await this.httpClient.processPaymentResult(payload, name => response.headers.get(name), response.status);
@@ -275,6 +297,23 @@ function supportsRequirement(value: unknown, requirement: PaymentRequirements): 
   }
   return value.kinds.some(kind => isRecord(kind) && kind.x402Version === 2 && kind.scheme === requirement.scheme &&
     kind.network === requirement.network && isRecord(kind.extra) && kind.extra.assetTransferMethod === "permit2" && kind.extra.paymentFlow === "upfront");
+}
+
+// A Provider error body is not protocol data. Surface only a short, machine-readable
+// code so browser users can distinguish a terminal validation rejection from an
+// UNKNOWN settlement result without rendering arbitrary server diagnostics.
+async function providerRejectionCode(response: Response): Promise<string | undefined> {
+  try {
+    const value: unknown = await response.json();
+    if (!isRecord(value)) return undefined;
+    for (const key of ["reason", "detail"]) {
+      const code = value[key];
+      if (typeof code === "string" && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(code)) return code;
+    }
+  } catch {
+    // A non-JSON rejection remains a terminal provider rejection; its HTTP status is enough.
+  }
+  return undefined;
 }
 
 function sameResource(resourceURL: string, requestURL: string): boolean {

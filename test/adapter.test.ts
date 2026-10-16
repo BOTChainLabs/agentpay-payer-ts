@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { HTTPPreflightClient, ThinPayerAdapter, type EvmPayerSigner, type PreflightClient } from "../src/index.js";
+import { AgentPayPayerError, HTTPPreflightClient, ThinPayerAdapter, type EvmPayerSigner, type PreflightClient } from "../src/index.js";
 
 const network = "eip155:968" as const;
 const asset = "0x75edC9335175Fc0552D51D48439F229c10420fe3" as const;
@@ -94,6 +94,27 @@ test("signs one Permit2 payload, retries the original request, and parses PAYMEN
   assert.equal(requests.filter(request => request.url === providerURL).length, 2);
   assert.match(requests[2].headers.get("PAYMENT-SIGNATURE") ?? "", /^[A-Za-z0-9+/]+=*$/);
   assert.equal(result.settlement.transaction, "0xabc");
+});
+
+test("default browser fetch retains the global receiver", async t => {
+  const originalFetch = globalThis.fetch;
+  let receiver: unknown;
+  globalThis.fetch = function (this: unknown): Promise<Response> {
+    receiver = this;
+    return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  } as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { signer: payerSigner } = signer();
+  const payerAdapter = new ThinPayerAdapter({
+    profile: { chainId: 968, network, usdtAddress: asset, permit2ProxyAddress: proxy, facilitatorURL: "https://facilitator.example" },
+    signer: payerSigner,
+    policy: { maxAmountAtomic: 100000n },
+  });
+
+  const result = await payerAdapter.fetchWithPayment(providerURL);
+  assert.equal(result.kind, "unpaid");
+  assert.equal(receiver, globalThis);
 });
 
 test("does not sign when preflight blocks payment", async () => {
@@ -239,6 +260,52 @@ test("an indeterminate signed retry can only resend the original payment signatu
   assert.equal(retried.kind, "pending");
   assert.equal(signed.length, 1);
   assert.deepEqual(paymentHeaders, [paymentHeaders[0], paymentHeaders[0]]);
+});
+
+test("a signed provider 5xx without PAYMENT-RESPONSE retains the original signature for retry", async () => {
+  const { signer: payerSigner, signed } = signer();
+  const paymentHeaders: string[] = [];
+  const fetchImplementation: typeof fetch = async input => {
+    const request = new Request(input);
+    if (request.url === "https://facilitator.example/supported") return supportedResponse();
+    const signature = request.headers.get("PAYMENT-SIGNATURE");
+    if (signature === null) {
+      return new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": paymentRequiredHeader() } });
+    }
+    paymentHeaders.push(signature);
+    if (paymentHeaders.length === 1) {
+      return Response.json({ error: "payment processing did not complete", detail: "provider_error" }, { status: 502 });
+    }
+    return new Response(null, { status: 200, headers: { "PAYMENT-RESPONSE": paymentResponseHeader() } });
+  };
+
+  const first = await adapter(fetchImplementation, payerSigner).fetchWithPayment(providerURL);
+  assert.equal(first.kind, "unknown");
+  if (first.kind !== "unknown") throw new Error("expected unknown result");
+  assert.equal(first.response?.status, 502);
+  await first.attempt.retry();
+
+  assert.equal(signed.length, 1);
+  assert.deepEqual(paymentHeaders, [paymentHeaders[0], paymentHeaders[0]]);
+});
+
+test("a signed provider terminal rejection exposes only its safe reason code", async () => {
+  const { signer: payerSigner, signed } = signer();
+  const fetchImplementation: typeof fetch = async input => {
+    const request = new Request(input);
+    if (request.url === "https://facilitator.example/supported") return supportedResponse();
+    if (request.headers.get("PAYMENT-SIGNATURE") === null) {
+      return new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": paymentRequiredHeader() } });
+    }
+    return Response.json({ error: "payment processing did not complete", detail: "PAYMENT_SETTLEMENT_REJECTED", reason: "permit2_allowance_required" }, { status: 422 });
+  };
+
+  await assert.rejects(
+    () => adapter(fetchImplementation, payerSigner).fetchWithPayment(providerURL),
+    (error: unknown) => error instanceof AgentPayPayerError && error.code === "PAYMENT_RETRY_REJECTED" &&
+      error.status === 422 && error.message.includes("permit2_allowance_required"),
+  );
+  assert.equal(signed.length, 1);
 });
 
 test("HTTP preflight returns audited recovery actions without executing them", async () => {
